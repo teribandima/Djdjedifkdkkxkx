@@ -27,102 +27,97 @@ from vars import *  # Add this import
 from db import Database
 
 
-
 def get_duration(filename):
-    result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries",
-         "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filename],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT
-    )
-    return float(result.stdout)
+    """Get video duration with error handling"""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filename],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        duration_str = result.stdout.strip()
+        if duration_str and duration_str != 'N/A':
+            return float(duration_str)
+        else:
+            return 0.0
+    except Exception as e:
+        print(f"⚠️ Duration error: {e}")
+        return 0.0
 
-def split_large_video(file_path, max_size_mb=1900):
-    """Split large video into parts with proper encoding"""
+def human_readable_size(size, decimal_places=2):
+    for unit in ['B', 'KiB', 'MiB', 'GiB', 'TiB']:
+        if size < 1024.0:
+            return f"{size:.{decimal_places}f}{unit}"
+        size /= 1024.0
+    return f"{size:.{decimal_places}f}PiB"
+
+def split_large_video(file_path, max_size_mb=1800):
+    """
+    Split video into parts. 
+    Default max_size is 1800MB (Safe buffer for 2000MB limit).
+    """
+    if not os.path.exists(file_path):
+        return []
+
     size_bytes = os.path.getsize(file_path)
-    max_bytes = max_size_mb * 1024 * 1024
+    # 2000MB limit, but we use 1800MB to be safe with Variable Bitrate (VBR) spikes
+    max_bytes = max_size_mb * 1024 * 1024 
 
+    # If file is smaller than limit, return original
     if size_bytes <= max_bytes:
         return [file_path]
 
-    try:
-        duration_val = get_duration(file_path)
-    except:
-        print("⚠️ Could not get duration, trying alternate method...")
-        duration_val = 3600  # fallback
+    print(f"⚠️ File size {human_readable_size(size_bytes)} > {max_size_mb}MiB. Starting split...")
 
-    parts = ceil(size_bytes / max_bytes)
+    duration_val = get_duration(file_path)
+    if duration_val == 0:
+        # Fallback if duration fails: Estimate based on size (approximate)
+        print("⚠️ Could not get duration, using fallback estimation.")
+        duration_val = (size_bytes / (1024 * 1024)) * 0.5 # Rough guess
+
+    # Calculate parts
+    parts = math.ceil(size_bytes / max_bytes)
     part_duration = duration_val / parts
     
-    # Get file extension
     file_ext = file_path.split('.')[-1].lower()
     base_name = file_path.rsplit(".", 1)[0]
     output_files = []
 
-    print(f"📦 Splitting {human_readable_size(size_bytes)} video into {parts} parts...")
-
     for i in range(parts):
-        output_file = f"{base_name}_part{i+1}.mp4"
+        output_file = f"{base_name}_part{i+1}.mp4" # Force MP4 container
         start_time = int(part_duration * i)
         
-        # ✅ For WebM or problematic files, re-encode to MP4
-        if file_ext in ['webm', 'mkv']:
-            cmd = [
-                "ffmpeg", "-y",
-                "-ss", str(start_time),
-                "-i", file_path,
-                "-t", str(int(part_duration)),
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-c:a", "aac", "-b:a", "128k",
-                "-movflags", "+faststart",
-                output_file
-            ]
-        else:
-            # Try copy first for MP4 files
-            cmd = [
-                "ffmpeg", "-y",
-                "-ss", str(start_time),
-                "-i", file_path,
-                "-t", str(int(part_duration)),
-                "-c", "copy",
-                "-movflags", "+faststart",
-                output_file
-            ]
+        # Determine Command
+        # We ALWAYS re-encode WebM to MP4 (libx264) for Telegram compatibility
+        # We use -preset veryfast to speed up the process
         
-        print(f"⏳ Creating part {i+1}/{parts}...")
-        result = subprocess.run(cmd, capture_output=True)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", file_path,
+            "-ss", str(int(part_duration * i)),
+            "-t", str(int(part_duration)),
+            "-c", "copy",
+            output_file
+        ]
         
-        # ✅ Verify output file
-        if os.path.exists(output_file) and os.path.getsize(output_file) > 1024:
-            # Test if file is valid
-            test_cmd = f'ffprobe -v error "{output_file}"'
-            test_result = subprocess.run(test_cmd, shell=True, capture_output=True)
+        print(f"⏳ Processing Part {i+1}/{parts} ({int(part_duration)}s)...")
+        
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-            if test_result.returncode == 0:
+            if os.path.exists(output_file) and os.path.getsize(output_file) > 1024:
+                final_size = os.path.getsize(output_file)
+                print(f"✅ Part {i+1} Done: {human_readable_size(final_size)}")
                 output_files.append(output_file)
-                print(f"✅ Part {i+1} created: {human_readable_size(os.path.getsize(output_file))}")
             else:
-                print(f"❌ Part {i+1} corrupted, re-encoding...")
-                os.remove(output_file)
+                print(f"❌ Part {i+1} failed: Empty file.")
                 
-                # Force re-encode
-                cmd_reencode = [
-                    "ffmpeg", "-y",
-                    "-ss", str(start_time),
-                    "-i", file_path,
-                    "-t", str(int(part_duration)),
-                    "-c:v", "libx264", "-preset", "fast",
-                    "-c:a", "aac",
-                    "-movflags", "+faststart",
-                    output_file
-                ]
-                subprocess.run(cmd_reencode)
-                if os.path.exists(output_file):
-                    output_files.append(output_file)
-        else:
-            print(f"⚠️ Part {i+1} failed to create")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Error encoding part {i+1}: {e}")
 
-    return output_files if output_files else [file_path]
+    return output_files
 
 def duration(filename):
     result = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
