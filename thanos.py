@@ -124,6 +124,13 @@ def split_large_video(file_path, max_size_mb=1900):
 
     return output_files if output_files else [file_path]
 
+def duration(filename):
+    result = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                             "format=duration", "-of",
+                             "default=noprint_wrappers=1:nokey=1", filename],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT)
+    return float(result.stdout)
 
 def get_duration(filename):
     """Get video duration with error handling"""
