@@ -53,25 +53,17 @@ def human_readable_size(size, decimal_places=2):
         size /= 1024.0
     return f"{size:.{decimal_places}f}PiB"
 
-
 def split_large_video(file_path, max_size_mb=1900):
-    """
-    Splits video using strict -c copy mode with user specific command.
-    """
     if not os.path.exists(file_path):
-        print(f"❌ File not found: {file_path}")
         return []
 
     size_bytes = os.path.getsize(file_path)
     max_bytes = max_size_mb * 1024 * 1024
 
-    # Agar file choti hai to return kar do
     if size_bytes <= max_bytes:
         return [file_path]
 
-    print(f"📦 Splitting {file_path} using Stream Copy...")
-
-    # 1. Get Duration
+    # Duration
     try:
         res = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path],
@@ -79,48 +71,47 @@ def split_large_video(file_path, max_size_mb=1900):
         )
         duration = float(res.stdout.strip())
     except:
-        # Fallback logic
-        duration = size_bytes / (1024 * 1024) 
+        duration = size_bytes / (1024 * 1024)
 
-    # 2. Calculate Parts
     parts = math.ceil(size_bytes / max_bytes)
     part_duration = duration / parts
     
-    # 3. Handle Extension
-    # NOTE: -c copy use kar rahe hain isliye extension SAME honi chahiye (WebM -> WebM)
-    file_ext = file_path.split('.')[-1]
     base_name = file_path.rsplit(".", 1)[0]
     output_files = []
 
+    print(f"📦 Splitting into {parts} parts (Smart Copy Mode)...")
+
     for i in range(parts):
-        output_file = f"{base_name}_part{i+1}.{file_ext}"
+        output_file = f"{base_name}_part{i+1}.mp4"
         
-        # --- YOUR EXACT REQUESTED COMMAND ---
+        # ✅ MAGIC COMMAND
+        # -c:v copy  -> Video touch nahi karega (Super Fast)
+        # -c:a aac   -> Audio ko fix karega taaki MP4 corrupt na ho (Fast)
         cmd = [
             "ffmpeg", "-y",
             "-i", file_path,
             "-ss", str(int(part_duration * i)),
             "-t", str(int(part_duration)),
-            "-c", "copy",
+            "-c:v", "copy",     # Video Copy (No re-encode)
+            "-c:a", "aac",      # Audio Convert (Fixes MP4 error)
             output_file
         ]
-        # ------------------------------------
 
         print(f"✂️ Cutting Part {i+1}/{parts}...")
         
         try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
             
             if os.path.exists(output_file) and os.path.getsize(output_file) > 1024:
                 print(f"✅ Part {i+1} Created: {output_file}")
                 output_files.append(output_file)
             else:
-                print(f"❌ Part {i+1} failed (Empty or small file)")
-                
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Error splitting part {i+1}: {e}")
+                print(f"❌ Part {i+1} failed (Empty File)")
 
-    return output_files 
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Error in Part {i+1}: {e}")
+
+    return output_files
     
 def duration(filename):
     result = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
