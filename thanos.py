@@ -38,43 +38,114 @@ def get_duration(filename):
     return float(result.stdout)
 
 def split_large_video(file_path, max_size_mb=1900):
+    """Split large video into parts with proper encoding"""
     size_bytes = os.path.getsize(file_path)
     max_bytes = max_size_mb * 1024 * 1024
 
     if size_bytes <= max_bytes:
-        return [file_path]  # No splitting needed
+        return [file_path]
 
-    duration = get_duration(file_path)
+    try:
+        duration_val = get_duration(file_path)
+    except:
+        print("⚠️ Could not get duration, trying alternate method...")
+        duration_val = 3600  # fallback
+
     parts = ceil(size_bytes / max_bytes)
-    part_duration = duration / parts
+    part_duration = duration_val / parts
+    
+    # Get file extension
+    file_ext = file_path.split('.')[-1].lower()
     base_name = file_path.rsplit(".", 1)[0]
     output_files = []
 
+    print(f"📦 Splitting {human_readable_size(size_bytes)} video into {parts} parts...")
+
     for i in range(parts):
         output_file = f"{base_name}_part{i+1}.mp4"
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", file_path,
-            "-ss", str(int(part_duration * i)),
-            "-t", str(int(part_duration)),
-            "-c", "copy",
-            output_file
-        ]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if os.path.exists(output_file):
-            output_files.append(output_file)
+        start_time = int(part_duration * i)
+        
+        # ✅ For WebM or problematic files, re-encode to MP4
+        if file_ext in ['webm', 'mkv']:
+            cmd = [
+                "ffmpeg", "-y",
+                "-ss", str(start_time),
+                "-i", file_path,
+                "-t", str(int(part_duration)),
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+                output_file
+            ]
+        else:
+            # Try copy first for MP4 files
+            cmd = [
+                "ffmpeg", "-y",
+                "-ss", str(start_time),
+                "-i", file_path,
+                "-t", str(int(part_duration)),
+                "-c", "copy",
+                "-movflags", "+faststart",
+                output_file
+            ]
+        
+        print(f"⏳ Creating part {i+1}/{parts}...")
+        result = subprocess.run(cmd, capture_output=True)
+        
+        # ✅ Verify output file
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 1024:
+            # Test if file is valid
+            test_cmd = f'ffprobe -v error "{output_file}"'
+            test_result = subprocess.run(test_cmd, shell=True, capture_output=True)
+            
+            if test_result.returncode == 0:
+                output_files.append(output_file)
+                print(f"✅ Part {i+1} created: {human_readable_size(os.path.getsize(output_file))}")
+            else:
+                print(f"❌ Part {i+1} corrupted, re-encoding...")
+                os.remove(output_file)
+                
+                # Force re-encode
+                cmd_reencode = [
+                    "ffmpeg", "-y",
+                    "-ss", str(start_time),
+                    "-i", file_path,
+                    "-t", str(int(part_duration)),
+                    "-c:v", "libx264", "-preset", "fast",
+                    "-c:a", "aac",
+                    "-movflags", "+faststart",
+                    output_file
+                ]
+                subprocess.run(cmd_reencode)
+                if os.path.exists(output_file):
+                    output_files.append(output_file)
+        else:
+            print(f"⚠️ Part {i+1} failed to create")
 
-    return output_files
+    return output_files if output_files else [file_path]
 
 
-def duration(filename):
-    result = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
-                             "format=duration", "-of",
-                             "default=noprint_wrappers=1:nokey=1", filename],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT)
-    return float(result.stdout)
-
+def get_duration(filename):
+    """Get video duration with error handling"""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filename],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        duration_str = result.stdout.strip()
+        if duration_str and duration_str != 'N/A':
+            return float(duration_str)
+        else:
+            raise ValueError("Invalid duration")
+    except Exception as e:
+        print(f"Duration error: {e}")
+        # Fallback: estimate from file size (rough estimate: 2MB/min for 720p)
+        size_mb = os.path.getsize(filename) / (1024 * 1024)
+        estimated_duration = (size_mb / 2) * 60
+        return estimated_duration
 
 def get_mps_and_keys(api_url):
     response = requests.get(api_url)
