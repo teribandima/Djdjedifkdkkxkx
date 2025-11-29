@@ -54,16 +54,34 @@ def human_readable_size(size, decimal_places=2):
     return f"{size:.{decimal_places}f}PiB"
 
 def split_large_video(file_path, max_size_mb=1900):
+    """
+    1. Renames input file to .mkv (to fix container issues).
+    2. Splits using -c copy (Super Fast).
+    3. Output is .mkv (Error Free).
+    """
     if not os.path.exists(file_path):
+        print(f"❌ File not found: {file_path}")
         return []
 
+    # --- STEP 1: EXTENSION FIX ---
+    # Agar file .mp4 hai lekin asal mein WebM data hai, to usse .mkv rename kar do
+    # Taki FFmpeg confuse na ho.
+    base_name = file_path.rsplit(".", 1)[0]
+    proper_input_path = f"{base_name}.mkv"
+    
+    if file_path != proper_input_path:
+        print(f"🔄 Renaming input to MKV for safe splitting...")
+        os.rename(file_path, proper_input_path)
+        file_path = proper_input_path
+
+    # --- STEP 2: CALCULATIONS ---
     size_bytes = os.path.getsize(file_path)
     max_bytes = max_size_mb * 1024 * 1024
 
     if size_bytes <= max_bytes:
         return [file_path]
 
-    # Duration
+    # Duration check
     try:
         res = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path],
@@ -71,29 +89,26 @@ def split_large_video(file_path, max_size_mb=1900):
         )
         duration = float(res.stdout.strip())
     except:
-        duration = size_bytes / (1024 * 1024)
+        duration = size_bytes / (1024 * 1024) # Fallback
 
     parts = math.ceil(size_bytes / max_bytes)
     part_duration = duration / parts
     
-    base_name = file_path.rsplit(".", 1)[0]
     output_files = []
+    print(f"📦 Splitting into {parts} parts (MKV Mode)...")
 
-    print(f"📦 Splitting into {parts} parts (Smart Copy Mode)...")
-
+    # --- STEP 3: SPLITTING ---
     for i in range(parts):
-        output_file = f"{base_name}_part{i+1}.mp4"
+        # ✅ Output MKV hi hona chahiye agar input WebM/VP9 hai
+        output_file = f"{base_name}_part{i+1}.mkv"
         
-        # ✅ MAGIC COMMAND
-        # -c:v copy  -> Video touch nahi karega (Super Fast)
-        # -c:a aac   -> Audio ko fix karega taaki MP4 corrupt na ho (Fast)
+        # Pure Stream Copy Command (No Error)
         cmd = [
             "ffmpeg", "-y",
             "-i", file_path,
             "-ss", str(int(part_duration * i)),
             "-t", str(int(part_duration)),
-            "-c:v", "copy",     # Video Copy (No re-encode)
-            "-c:a", "aac",      # Audio Convert (Fixes MP4 error)
+            "-c", "copy",
             output_file
         ]
 
@@ -112,6 +127,7 @@ def split_large_video(file_path, max_size_mb=1900):
             print(f"❌ Error in Part {i+1}: {e}")
 
     return output_files
+
     
 def duration(filename):
     result = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
