@@ -53,46 +53,49 @@ def human_readable_size(size, decimal_places=2):
         size /= 1024.0
     return f"{size:.{decimal_places}f}PiB"
 
-def split_large_video(file_path, max_size_mb=1800):
+
+def split_large_video(file_path, max_size_mb=1900):
     """
-    Split video into parts. 
-    Default max_size is 1800MB (Safe buffer for 2000MB limit).
+    Splits video using strict -c copy mode with user specific command.
     """
     if not os.path.exists(file_path):
+        print(f"❌ File not found: {file_path}")
         return []
 
     size_bytes = os.path.getsize(file_path)
-    # 2000MB limit, but we use 1800MB to be safe with Variable Bitrate (VBR) spikes
-    max_bytes = max_size_mb * 1024 * 1024 
+    max_bytes = max_size_mb * 1024 * 1024
 
-    # If file is smaller than limit, return original
+    # Agar file choti hai to return kar do
     if size_bytes <= max_bytes:
         return [file_path]
 
-    print(f"⚠️ File size {human_readable_size(size_bytes)} > {max_size_mb}MiB. Starting split...")
+    print(f"📦 Splitting {file_path} using Stream Copy...")
 
-    duration_val = get_duration(file_path)
-    if duration_val == 0:
-        # Fallback if duration fails: Estimate based on size (approximate)
-        print("⚠️ Could not get duration, using fallback estimation.")
-        duration_val = (size_bytes / (1024 * 1024)) * 0.5 # Rough guess
+    # 1. Get Duration
+    try:
+        res = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path],
+            capture_output=True, text=True
+        )
+        duration = float(res.stdout.strip())
+    except:
+        # Fallback logic
+        duration = size_bytes / (1024 * 1024) 
 
-    # Calculate parts
+    # 2. Calculate Parts
     parts = math.ceil(size_bytes / max_bytes)
-    part_duration = duration_val / parts
+    part_duration = duration / parts
     
-    file_ext = file_path.split('.')[-1].lower()
+    # 3. Handle Extension
+    # NOTE: -c copy use kar rahe hain isliye extension SAME honi chahiye (WebM -> WebM)
+    file_ext = file_path.split('.')[-1]
     base_name = file_path.rsplit(".", 1)[0]
     output_files = []
 
     for i in range(parts):
-        output_file = f"{base_name}_part{i+1}.mp4" # Force MP4 container
-        start_time = int(part_duration * i)
+        output_file = f"{base_name}_part{i+1}.{file_ext}"
         
-        # Determine Command
-        # We ALWAYS re-encode WebM to MP4 (libx264) for Telegram compatibility
-        # We use -preset veryfast to speed up the process
-        
+        # --- YOUR EXACT REQUESTED COMMAND ---
         cmd = [
             "ffmpeg", "-y",
             "-i", file_path,
@@ -101,24 +104,24 @@ def split_large_video(file_path, max_size_mb=1800):
             "-c", "copy",
             output_file
         ]
-        
-        print(f"⏳ Processing Part {i+1}/{parts} ({int(part_duration)}s)...")
+        # ------------------------------------
+
+        print(f"✂️ Cutting Part {i+1}/{parts}...")
         
         try:
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
             
             if os.path.exists(output_file) and os.path.getsize(output_file) > 1024:
-                final_size = os.path.getsize(output_file)
-                print(f"✅ Part {i+1} Done: {human_readable_size(final_size)}")
+                print(f"✅ Part {i+1} Created: {output_file}")
                 output_files.append(output_file)
             else:
-                print(f"❌ Part {i+1} failed: Empty file.")
+                print(f"❌ Part {i+1} failed (Empty or small file)")
                 
         except subprocess.CalledProcessError as e:
-            print(f"❌ Error encoding part {i+1}: {e}")
+            print(f"❌ Error splitting part {i+1}: {e}")
 
-    return output_files
-
+    return output_files 
+    
 def duration(filename):
     result = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
                              "format=duration", "-of",
